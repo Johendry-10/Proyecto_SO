@@ -1,0 +1,22 @@
+# --- Binarios y Ejecutables ---
+*.exe
+*.out
+*.app
+*.dll
+*.so
+*.dylib
+
+# --- Archivos de Objeto y Compilación ---
+*.obj
+*.o
+*.ilk
+*.pdb
+*.exp
+*.lib
+
+# --- Carpetas comunes de compilación ---
+build/
+bin/
+out/
+debug/
+release/

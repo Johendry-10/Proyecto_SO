@@ -54,3 +54,14 @@ extern std::string current_algo;
 extern int current_quantum;
 extern int speed_ms;
 extern bool is_cpu_running;
+
+struct GanttEvent {
+    int pid;
+    std::string name;
+    int start;
+    int end;
+};
+
+extern std::vector<GanttEvent> gantt_log;
+
+void gantt_record(int pid, const std::string& name, int tick);

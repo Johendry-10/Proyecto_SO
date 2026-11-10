@@ -21,6 +21,15 @@ std::string current_algo = "RR";
 int current_quantum = 2;         // Defecto: 2
 int speed_ms = 1000;             // Por defecto: 1000 ms = 1 segundo real[cite: 16]
 bool is_cpu_running = false;     // Inicia pausado hasta que se ingrese 'start'
+std::vector<GanttEvent> gantt_log;
+
+void gantt_record(int pid, const std::string& name, int tick) {
+    if (!gantt_log.empty() && gantt_log.back().pid == pid && gantt_log.back().end == tick) {
+        gantt_log.back().end = tick + 1;
+    } else {
+        gantt_log.push_back({pid, name, tick, tick + 1});
+    }
+}
 
 // Función auxiliar para verificar si un string es un número
 bool is_number(const std::string& s) {
@@ -352,6 +361,78 @@ void* cli_thread_func(void* arg) {
 
             std::cout << "Velocidad del reloj del sistema configurada a " << speed_ms << " ms por tick.\n";
         }
+        else if (command == "start" || command == "pause") {
+            if (tokens.size() > 1) {
+                std::cout << "[ERROR DE SINTAXIS]: El comando '" << command << "' no recibe argumentos.\n";
+                continue;
+            }
+
+            bool target = (command == "start");
+            pthread_mutex_lock(&system_mutex);
+            bool already = (is_cpu_running == target);
+            is_cpu_running = target;
+            pthread_mutex_unlock(&system_mutex);
+
+            if (already) {
+                std::cout << (target ? "La simulación ya está en ejecución.\n" : "La simulación ya está pausada.\n");
+            } else {
+                std::cout << (target ? "Simulación iniciada.\n" : "Simulación pausada.\n");
+            }
+        }
+        else if (command == "gantt") {
+            if (tokens.size() > 1) {
+                std::cout << "[ERROR DE SINTAXIS]: El comando 'gantt' no recibe argumentos.\n";
+                continue;
+            }
+
+            pthread_mutex_lock(&system_mutex);
+            if (gantt_log.empty()) {
+                std::cout << "El historial de ejecución está vacío.\n";
+            } else {
+                for (size_t i = 0; i < gantt_log.size(); i++) {
+                    const GanttEvent& e = gantt_log[i];
+                    if (i > 0) std::cout << " -> ";
+                    std::cout << "[" << e.start << "-" << e.end << "s: "
+                              << (e.pid == 0 ? "IDLE" : e.name) << "]";
+                }
+                std::cout << "\n";
+            }
+            pthread_mutex_unlock(&system_mutex);
+        }
+        else if (command == "stats") {
+            if (tokens.size() > 1) {
+                std::cout << "[ERROR DE SINTAXIS]: El comando 'stats' no recibe argumentos.\n";
+                continue;
+            }
+
+            pthread_mutex_lock(&system_mutex);
+            int total = process_list.size();
+            int finished = 0;
+            double sum_wt = 0, sum_tat = 0;
+            for (const auto& p : process_list) {
+                if (p.state == FINALIZADO) {
+                    finished++;
+                    sum_wt += p.waiting_time;
+                    sum_tat += p.turnaround_time;
+                }
+            }
+            int busy = 0, elapsed = 0;
+            for (const auto& e : gantt_log) {
+                elapsed += e.end - e.start;
+                if (e.pid != 0) busy += e.end - e.start;
+            }
+            pthread_mutex_unlock(&system_mutex);
+
+            double avg_wt = finished ? sum_wt / finished : 0.0;
+            double avg_tat = finished ? sum_tat / finished : 0.0;
+            double usage = elapsed ? 100.0 * busy / elapsed : 0.0;
+
+            std::cout << std::fixed << std::setprecision(2);
+            std::cout << "Procesos finalizados : " << finished << " / " << total << "\n";
+            std::cout << "Tiempo Promedio de Espera  : " << avg_wt << " ticks\n";
+            std::cout << "Tiempo Promedio de Retorno : " << avg_tat << " ticks\n";
+            std::cout << "Uso de CPU : " << usage << "%\n";
+        }
         else {
              std::cout << "[ERROR]: Comando no reconocido.\n";
         }
@@ -365,8 +446,21 @@ void* cpu_thread_func(void* arg) {
     std::cout << "[CPU] Hilo del motor de scheduling iniciado.\n";
     // Mantenemos el hilo vivo mientras la CLI esté corriendo
     while (is_running) {
-        // En el futuro aquí irá la lógica del scheduler
-        usleep(100000); // 100ms sleep temporal para evitar que consuma 100% de CPU
+        pthread_mutex_lock(&system_mutex);
+        bool running = is_cpu_running;
+        int delay = speed_ms;
+        pthread_mutex_unlock(&system_mutex);
+
+        if (!running) {
+            usleep(100000);
+            continue;
+        }
+
+        usleep(delay * 1000);
+
+        pthread_mutex_lock(&system_mutex);
+        if (is_cpu_running) clock_ticks++;
+        pthread_mutex_unlock(&system_mutex);
     }
     return nullptr;
 }

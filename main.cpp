@@ -8,6 +8,7 @@
 #include <cctype>
 #include <fstream>
 #include <iomanip>
+#include <atomic>
 
 // Definición de variables globales declaradas en simulador.h
 std::queue<PCB> ready_queue;
@@ -15,7 +16,7 @@ std::vector<PCB> process_list;
 int clock_ticks = 0;
 pthread_mutex_t system_mutex = PTHREAD_MUTEX_INITIALIZER;
 int next_pid = 1; // Para el PID único autoincremental[cite: 2]
-bool is_running = true; // Para controlar la salida limpia
+std::atomic<bool> is_running(true); // Para controlar la salida limpia (atómica: la leen ambos hilos)
 // Variables de configuración de la CPU inicializadas con los valores por defecto exigidos
 std::string current_algo = "RR"; 
 int current_quantum = 2;         // Defecto: 2
@@ -441,6 +442,204 @@ void* cli_thread_func(void* arg) {
     return nullptr;
 }
 
+// =====================================================================
+// --- PARTE 1: Motor de Planificación y Algoritmos de CPU ---
+// =====================================================================
+//
+// Notas de diseño:
+// - 'process_list' es la fuente de verdad: ahí se actualizan estado,
+//   ráfaga restante y tiempos de cada PCB (eso es lo que muestran 'ps' y 'pcb').
+// - 'ready_queue' guarda copias de PCB; el motor solo usa su PID para
+//   ubicar el proceso real dentro de 'process_list'.
+// - Simulación discreta: cada tick representa el intervalo [t, t+1).
+//   Todas las funciones de abajo se llaman con 'system_mutex' tomado.
+
+static int running_pid = -1;   // PID del proceso en EJECUCION (-1 = CPU libre)
+static int quantum_used = 0;   // Ticks consumidos del quantum actual (RR)
+
+// Busca un proceso por PID en la lista global
+static PCB* find_process(int pid) {
+    for (auto& p : process_list) {
+        if (p.pid == pid) return &p;
+    }
+    return nullptr;
+}
+
+// Indica si un PID ya está en la cola de listos
+static bool in_ready_queue(int pid) {
+    bool found = false;
+    size_t n = ready_queue.size();
+    for (size_t i = 0; i < n; i++) {
+        PCB p = ready_queue.front();
+        ready_queue.pop();
+        if (p.pid == pid) found = true;
+        ready_queue.push(p);   // se reinserta para conservar el orden
+    }
+    return found;
+}
+
+// Quita de la cola de listos la entrada de un PID (conserva el orden del resto)
+static void remove_from_ready_queue(int pid) {
+    size_t n = ready_queue.size();
+    for (size_t i = 0; i < n; i++) {
+        PCB p = ready_queue.front();
+        ready_queue.pop();
+        if (p.pid != pid) ready_queue.push(p);
+    }
+}
+
+// Elimina de la cola entradas de procesos que ya no están LISTOS
+// (por ejemplo, si otro módulo los finalizó o bloqueó)
+static void purge_ready_queue() {
+    size_t n = ready_queue.size();
+    for (size_t i = 0; i < n; i++) {
+        PCB p = ready_queue.front();
+        ready_queue.pop();
+        PCB* real = find_process(p.pid);
+        if (real && real->state == LISTO && p.pid != running_pid) ready_queue.push(p);
+    }
+}
+
+// Gestión de llegadas: los procesos NUEVOS cuyo arrival_time ya se cumplió
+// pasan a LISTO y entran a la cola de listos.
+static void admit_arrivals() {
+    for (auto& p : process_list) {
+        if (p.state == NUEVO && p.arrival_time <= clock_ticks) {
+            p.state = LISTO;
+            if (!in_ready_queue(p.pid)) ready_queue.push(p);
+        }
+    }
+    // 'create' y 'load' pueden encolar una copia ya marcada como LISTO
+    // mientras que en process_list sigue como NUEVO; se sincroniza aquí.
+}
+
+// Devuelve el proceso que debe usar la CPU en este tick según el algoritmo
+static PCB* pick_next_process() {
+    PCB* current = (running_pid != -1) ? find_process(running_pid) : nullptr;
+    if (current && current->state != EJECUCION) {
+        // Otro módulo cambió su estado (bloqueado, finalizado, etc.)
+        current = nullptr;
+        running_pid = -1;
+        quantum_used = 0;
+    }
+
+    if (current_algo == "SRTF") {
+        // Buscar en LISTOS el de menor ráfaga restante (empate: el que llegó antes a la cola)
+        PCB* best = nullptr;
+        size_t n = ready_queue.size();
+        for (size_t i = 0; i < n; i++) {
+            PCB entry = ready_queue.front();
+            ready_queue.pop();
+            ready_queue.push(entry);
+            PCB* cand = find_process(entry.pid);
+            if (cand && cand->state == LISTO &&
+                (!best || cand->remaining_burst < best->remaining_burst)) {
+                best = cand;
+            }
+        }
+
+        // Desapropiación inmediata solo si el candidato es estrictamente menor
+        if (current && (!best || current->remaining_burst <= best->remaining_burst)) {
+            return current;
+        }
+        if (current) {
+            current->state = LISTO;          // el que se estaba ejecutando vuelve a LISTOS
+            ready_queue.push(*current);
+        }
+        if (best) {
+            remove_from_ready_queue(best->pid);
+            best->state = EJECUCION;
+            running_pid = best->pid;
+            quantum_used = 0;
+        } else {
+            running_pid = -1;
+        }
+        return best;
+    }
+
+    // --- Round Robin ---
+    if (current && quantum_used < current_quantum) {
+        return current;                      // aún le queda quantum
+    }
+    if (current) {
+        // Por si el quantum se redujo con set_sched mientras se ejecutaba
+        current->state = LISTO;
+        ready_queue.push(*current);
+        running_pid = -1;
+        quantum_used = 0;
+    }
+    while (!ready_queue.empty()) {
+        PCB entry = ready_queue.front();
+        ready_queue.pop();
+        PCB* next = find_process(entry.pid);
+        if (next && next->state == LISTO) {
+            next->state = EJECUCION;
+            running_pid = next->pid;
+            quantum_used = 0;
+            return next;
+        }
+    }
+    return nullptr;
+}
+
+// Ejecuta un tick completo del planificador
+static void scheduler_tick() {
+    admit_arrivals();
+    purge_ready_queue();
+
+    PCB* proc = pick_next_process();
+    int t = clock_ticks;
+
+    if (proc) {
+        // Tiempo de Respuesta: primera vez que el proceso toma la CPU
+        if (!proc->is_first_response) {
+            proc->response_time = t - proc->arrival_time;
+            proc->is_first_response = true;
+        }
+
+        // Consumir una unidad de CPU
+        proc->remaining_burst--;
+        quantum_used++;
+        gantt_record(proc->pid, proc->name, t);
+    } else {
+        // CPU ociosa: solo se registra si quedan procesos por llegar,
+        // para no inflar el Gantt ni bajar el uso de CPU cuando ya todo terminó
+        bool pending = false;
+        for (const auto& p : process_list) {
+            if (p.state == NUEVO || p.state == LISTO) { pending = true; break; }
+        }
+        if (pending) gantt_record(0, "IDLE", t);
+    }
+
+    // Tiempo de Espera: cada tick que un proceso pasa en LISTOS sin ejecutarse
+    for (auto& p : process_list) {
+        if (p.state == LISTO) p.waiting_time++;
+    }
+
+    // Avanza el reloj simulado
+    clock_ticks++;
+
+    if (proc) {
+        if (proc->remaining_burst <= 0) {
+            // Tiempo de Retorno: instante de finalización - instante de llegada
+            proc->remaining_burst = 0;
+            proc->state = FINALIZADO;
+            proc->turnaround_time = clock_ticks - proc->arrival_time;
+            running_pid = -1;
+            quantum_used = 0;
+        } else if (current_algo == "RR" && quantum_used >= current_quantum) {
+            // Quantum agotado con ráfaga pendiente: desapropiación.
+            // Primero entran los que llegan en este mismo instante y luego
+            // el proceso desalojado, que va al final de la cola.
+            admit_arrivals();
+            proc->state = LISTO;
+            ready_queue.push(*proc);
+            running_pid = -1;
+            quantum_used = 0;
+        }
+    }
+}
+
 // --- Hilo 2: Motor de Scheduling (CPU) ---
 void* cpu_thread_func(void* arg) {
     std::cout << "[CPU] Hilo del motor de scheduling iniciado.\n";
@@ -452,15 +651,17 @@ void* cpu_thread_func(void* arg) {
         pthread_mutex_unlock(&system_mutex);
 
         if (!running) {
-            usleep(100000);
+            usleep(100000);   // en pausa: revisa cada 100 ms si se reanudó
             continue;
         }
 
-        usleep(delay * 1000);
-
+        // --- SECCIÓN CRÍTICA: un tick del planificador ---
         pthread_mutex_lock(&system_mutex);
-        if (is_cpu_running) clock_ticks++;
+        if (is_cpu_running) scheduler_tick();
         pthread_mutex_unlock(&system_mutex);
+
+        // Retardo real configurado con set_speed
+        usleep(delay * 1000);
     }
     return nullptr;
 }

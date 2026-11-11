@@ -14,14 +14,14 @@
 std::queue<PCB> ready_queue;
 std::vector<PCB> process_list;
 int clock_ticks = 0;
+// EL MUTEX, Se inicializa al arrancar el programa.
 pthread_mutex_t system_mutex = PTHREAD_MUTEX_INITIALIZER;
-int next_pid = 1; // Para el PID único autoincremental[cite: 2]
-std::atomic<bool> is_running(true); // Para controlar la salida limpia (atómica: la leen ambos hilos)
-// Variables de configuración de la CPU inicializadas con los valores por defecto exigidos
+int next_pid = 1;
+std::atomic<bool> is_running(true); 
 std::string current_algo = "RR"; 
-int current_quantum = 2;         // Defecto: 2
-int speed_ms = 1000;             // Por defecto: 1000 ms = 1 segundo real[cite: 16]
-bool is_cpu_running = false;     // Inicia pausado hasta que se ingrese 'start'
+int current_quantum = 2;         
+int speed_ms = 1000;             
+bool is_cpu_running = false;     
 std::vector<GanttEvent> gantt_log;
 
 void gantt_record(int pid, const std::string& name, int tick) {
@@ -49,7 +49,7 @@ std::string state_to_string(ProcessState state) {
     }
 }
 
-// --- Hilo 1: Interfaz de Consola (CLI) ---
+// Hilo 1: Interfaz de Consola (CLI) 
 void* cli_thread_func(void* arg) {
     std::cout << "[CLI] Hilo de consola iniciado. Esperando comandos...\n";
     std::string input_line;
@@ -59,7 +59,6 @@ void* cli_thread_func(void* arg) {
         if (!std::getline(std::cin, input_line)) break;
         if (input_line.empty()) continue;
 
-        // Parsear la entrada separando por espacios
         std::istringstream iss(input_line);
         std::vector<std::string> tokens;
         std::string token;
@@ -70,22 +69,19 @@ void* cli_thread_func(void* arg) {
         std::string command = tokens[0];
 
         if (command == "exit") {
-            // Comando 'exit': cierra la simulación limpiamente[cite: 3]
             is_running = false;
             break;
         }
         else if (command == "create") {
-            // Validación de cantidad de argumentos (requiere nombre y burst, opcional prioridad)
             if (tokens.size() < 3 || tokens.size() > 4) {
                 std::cout << "[ERROR DE SINTAXIS]: Parámetros insuficientes o en exceso.\n"
-                          << "Uso correcto: create <nombre> <burst_time> [prioridad]\n"; // Mensaje descriptivo exigido[cite: 2, 3]
+                          << "Uso correcto: create <nombre> <burst_time> [prioridad]\n"; 
                 continue;
             }
 
             std::string name = tokens[1];
             std::string burst_str = tokens[2];
             
-            // Validar que burst sea un entero > 0[cite: 2]
             if (!is_number(burst_str)) {
                 std::cout << "[ERROR DE TIPO]: El burst_time debe ser un número entero positivo.\n";
                 continue;
@@ -96,10 +92,9 @@ void* cli_thread_func(void* arg) {
                  continue;
             }
 
-            int priority = 3; // Valor por defecto[cite: 2]
+            int priority = 3;
             if (tokens.size() == 4) {
                 std::string prio_str = tokens[3];
-                 // Validar que prioridad sea un entero entre 1 y 5[cite: 2]
                 if (!is_number(prio_str)) {
                     std::cout << "[ERROR DE TIPO]: La prioridad debe ser un número entero.\n";
                     continue;
@@ -112,13 +107,12 @@ void* cli_thread_func(void* arg) {
             }
 
             // --- SECCIÓN CRÍTICA ---
-            // Proteger las colas con el cerrojo de exclusión mutua[cite: 1, 4]
-            pthread_mutex_lock(&system_mutex);
+            pthread_mutex_lock(&system_mutex);//hace lock para que se puede escribir o leer
             
             PCB new_process;
-            new_process.pid = next_pid++; // PID único autoincremental[cite: 2]
-            new_process.name = name;      // String sin espacios[cite: 2]
-            new_process.state = NUEVO;    // Estado inicial NUEVO[cite: 2]
+            new_process.pid = next_pid++;
+            new_process.name = name;     
+            new_process.state = NUEVO;  
             new_process.priority = priority;
             new_process.arrival_time = clock_ticks; 
             new_process.initial_burst = burst;
@@ -130,15 +124,13 @@ void* cli_thread_func(void* arg) {
 
             process_list.push_back(new_process);
             
-            // Cambiar estado a LISTO y encolar[cite: 2]
             new_process.state = LISTO; 
             ready_queue.push(new_process);
 
             std::cout << "Proceso '" << name << "' creado exitosamente con PID " << new_process.pid 
                       << " (Burst: " << burst << ", Prioridad: " << priority << ").\n";
 
-            pthread_mutex_unlock(&system_mutex);
-            // --- FIN SECCIÓN CRÍTICA ---
+            pthread_mutex_unlock(&system_mutex);//hace unlock para seguir corriendo
 
         }
         else if (command == "ps") {
@@ -147,7 +139,7 @@ void* cli_thread_func(void* arg) {
                 continue;
             }
 
-            pthread_mutex_lock(&system_mutex);
+            pthread_mutex_lock(&system_mutex);//hacer lock para imprimir datos
             std::cout << std::left 
                       << std::setw(5)  << "PID" << " | "
                       << std::setw(12) << "NOMBRE" << " | "
@@ -167,13 +159,11 @@ void* cli_thread_func(void* arg) {
             pthread_mutex_unlock(&system_mutex);
         }
         else if (command == "pcb") {
-            // Validar que se reciba exactamente un argumento adicional (el PID)[cite: 9]
             if (tokens.size() != 2) {
                 std::cout << "[ERROR DE SINTAXIS]: Uso correcto: pcb <PID>\n";
                 continue;
             }
             
-            // Validar que el PID sea un número entero[cite: 9]
             if (!is_number(tokens[1])) {
                 std::cout << "[ERROR DE TIPO]: El PID debe ser un número entero positivo.\n";
                 continue;
@@ -184,7 +174,6 @@ void* cli_thread_func(void* arg) {
             
             pthread_mutex_lock(&system_mutex);
             for (const auto& p : process_list) {
-                // Validar que el PID exista en el sistema[cite: 9]
                 if (p.pid == pid_target) {
                     found = true;
                     std::cout << "=================================\n";
@@ -215,7 +204,6 @@ void* cli_thread_func(void* arg) {
             }
         }
         else if (command == "load") {
-            // Validar que se reciba exactamente un argumento (la ruta del archivo)[cite: 9]
             if (tokens.size() != 2) {
                 std::cout << "[ERROR DE SINTAXIS]: Uso correcto: load <archivo>\n";
                 continue;
@@ -224,7 +212,6 @@ void* cli_thread_func(void* arg) {
             std::string filename = tokens[1];
             std::ifstream file(filename);
 
-            // Validar existencia del archivo[cite: 9]
             if (!file.is_open()) {
                 std::cout << "[ERROR]: No se pudo abrir o encontrar el archivo '" << filename << "'.\n";
                 continue;
@@ -233,27 +220,19 @@ void* cli_thread_func(void* arg) {
             std::string line;
             int loaded_count = 0;
 
-            // Procesar el archivo línea por línea
             while (std::getline(file, line)) {
-                // Limpiar posibles retornos de carro (para compatibilidad con archivos hechos en Windows)
                 if (!line.empty() && line.back() == '\r') line.pop_back();
                 
-                // Ignorar líneas vacías o comentarios (que empiecen con '#')
                 if (line.empty() || line[0] == '#') continue; 
-
-                // Parsear la línea separada por comas
                 std::stringstream lineStream(line);
                 std::string cell;
                 std::vector<std::string> row;
                 
                 while (std::getline(lineStream, cell, ',')) {
-                    // Eliminar espacios en blanco al inicio y al final de cada celda
                     cell.erase(0, cell.find_first_not_of(" \t"));
                     cell.erase(cell.find_last_not_of(" \t") + 1);
                     row.push_back(cell);
                 }
-
-                // Validar formato: deben ser exactamente 4 columnas (Nombre, Burst, Prioridad, Llegada)
                 if (row.size() != 4) {
                     std::cout << "[ADVERTENCIA]: Formato incorrecto omitido en la línea: " << line << "\n";
                     continue;
@@ -272,7 +251,7 @@ void* cli_thread_func(void* arg) {
                 new_process.name = name;
                 new_process.state = NUEVO;
                 new_process.priority = priority;
-                new_process.arrival_time = arrival; // Asignamos su tiempo simulado de llegada[cite: 9]
+                new_process.arrival_time = arrival; 
                 new_process.initial_burst = burst;
                 new_process.remaining_burst = burst;
                 new_process.waiting_time = 0;
@@ -281,17 +260,12 @@ void* cli_thread_func(void* arg) {
                 new_process.is_first_response = false;
 
                 process_list.push_back(new_process);
-                
-                // Si el tiempo de llegada es menor o igual al reloj actual, ingresa a LISTOS de una vez.
-                // Si no, se queda en estado NUEVO en la process_list y el CPU Scheduler lo encolará más adelante
-                // respetando su tiempo simulado de llegada[cite: 9].
                 if (arrival <= clock_ticks) {
                     new_process.state = LISTO;
                     ready_queue.push(new_process);
                 }
                 
                 pthread_mutex_unlock(&system_mutex);
-                // --- FIN SECCIÓN CRÍTICA ---
                 
                 loaded_count++;
             }
@@ -299,28 +273,24 @@ void* cli_thread_func(void* arg) {
             std::cout << "Carga masiva finalizada. Se insertaron " << loaded_count << " procesos en el sistema.\n";
         }
         else if (command == "set_sched") {
-            // Validar que se reciban 1 o 2 argumentos adicionales[cite: 14]
             if (tokens.size() < 2 || tokens.size() > 3) {
                 std::cout << "[ERROR DE SINTAXIS]: Uso correcto: set_sched <algoritmo> [quantum]\n";
                 continue;
             }
 
             std::string algo = tokens[1];
-            // Validar coincidencia exacta del nombre del algoritmo[cite: 14]
             if (algo != "RR" && algo != "SRTF") {
-                std::cout << "[ERROR DE PARAMETRO]: Algoritmo no reconocido. Algoritmos válidos: RR, SRTF.\n";//[cite: 16]
+                std::cout << "[ERROR DE PARAMETRO]: Algoritmo no reconocido. Algoritmos válidos: RR, SRTF.\n";
                 continue;
             }
 
-            int quantum = 2; // Valor por defecto si no se proporciona[cite: 14]
+            int quantum = 2; 
             if (algo == "RR" && tokens.size() == 3) {
-                // Validar que el quantum sea un número entero[cite: 14]
                 if (!is_number(tokens[2])) {
                     std::cout << "[ERROR DE TIPO]: El quantum debe ser un número entero positivo.\n";
                     continue;
                 }
                 quantum = std::stoi(tokens[2]);
-                // Validar valor positivo del quantum[cite: 14]
                 if (quantum <= 0) {
                     std::cout << "[ERROR DE RANGO]: El quantum debe ser mayor a 0.\n";
                     continue;
@@ -339,18 +309,16 @@ void* cli_thread_func(void* arg) {
             std::cout << "\n";
         }
         else if (command == "set_speed") {
-            // Validar parámetros exigidos[cite: 14]
             if (tokens.size() != 2) {
                 std::cout << "[ERROR DE SINTAXIS]: Uso correcto: set_speed <ms_por_tick>\n";
                 continue;
             }
             if (!is_number(tokens[1])) {
-                std::cout << "[ERROR DE TIPO]: La velocidad debe ser un valor numérico válido.\n";//[cite: 14]
+                std::cout << "[ERROR DE TIPO]: La velocidad debe ser un valor numérico válido.\n";
                 continue;
             }
             
             int speed = std::stoi(tokens[1]);
-            // Validar que esté en un rango lógico (ej. entre 50 y 5000 ms)[cite: 14]
             if (speed < 50 || speed > 5000) {
                 std::cout << "[ERROR DE RANGO]: La velocidad debe estar entre 50 y 5000 ms.\n";
                 continue;
@@ -434,6 +402,24 @@ void* cli_thread_func(void* arg) {
             std::cout << "Tiempo Promedio de Retorno : " << avg_tat << " ticks\n";
             std::cout << "Uso de CPU : " << usage << "%\n";
         }
+        else if (command == "help") {
+            if (tokens.size() > 1) {
+                std::cout << "[ERROR DE SINTAXIS]: El comando 'help' no recibe argumentos.\n";
+                continue;
+            }
+            std::cout << "=== MANUAL DE USUARIO CLI ===\n"
+                      << "create <nombre> <burst> [prioridad] : Crea un nuevo proceso.\n"
+                      << "load <archivo>                      : Carga procesos desde un archivo de texto.\n"
+                      << "ps                                  : Muestra el estado de todos los procesos.\n"
+                      << "pcb <PID>                           : Muestra el detalle del PCB de un proceso.\n"
+                      << "set_sched <algoritmo> [quantum]     : Cambia algoritmo activo (RR o SRTF).\n"
+                      << "set_speed <ms_por_tick>             : Ajusta retardo real del reloj simulado.\n"
+                      << "start                               : Inicia o reanuda la simulación de CPU.\n"
+                      << "pause                               : Pausa la simulación de CPU.\n"
+                      << "gantt                               : Muestra diagrama de Gantt.\n"
+                      << "stats                               : Muestra estadísticas del sistema.\n"
+                      << "exit                                : Finaliza la ejecución de forma limpia.\n";
+        }
         else {
              std::cout << "[ERROR]: Comando no reconocido.\n";
         }
@@ -442,22 +428,11 @@ void* cli_thread_func(void* arg) {
     return nullptr;
 }
 
-// =====================================================================
-// --- PARTE 1: Motor de Planificación y Algoritmos de CPU ---
-// =====================================================================
-//
-// Notas de diseño:
-// - 'process_list' es la fuente de verdad: ahí se actualizan estado,
-//   ráfaga restante y tiempos de cada PCB (eso es lo que muestran 'ps' y 'pcb').
-// - 'ready_queue' guarda copias de PCB; el motor solo usa su PID para
-//   ubicar el proceso real dentro de 'process_list'.
-// - Simulación discreta: cada tick representa el intervalo [t, t+1).
-//   Todas las funciones de abajo se llaman con 'system_mutex' tomado.
+// Hilo 2: Motor de Planificación y Algoritmos de CPU
+static int running_pid = -1;   // PID 
+static int quantum_used = 0;   // Ticks 
 
-static int running_pid = -1;   // PID del proceso en EJECUCION (-1 = CPU libre)
-static int quantum_used = 0;   // Ticks consumidos del quantum actual (RR)
-
-// Busca un proceso por PID en la lista global
+// proceso por PID en la lista global
 static PCB* find_process(int pid) {
     for (auto& p : process_list) {
         if (p.pid == pid) return &p;
@@ -465,7 +440,6 @@ static PCB* find_process(int pid) {
     return nullptr;
 }
 
-// Indica si un PID ya está en la cola de listos
 static bool in_ready_queue(int pid) {
     bool found = false;
     size_t n = ready_queue.size();
@@ -473,12 +447,12 @@ static bool in_ready_queue(int pid) {
         PCB p = ready_queue.front();
         ready_queue.pop();
         if (p.pid == pid) found = true;
-        ready_queue.push(p);   // se reinserta para conservar el orden
+        ready_queue.push(p);   
     }
     return found;
 }
 
-// Quita de la cola de listos la entrada de un PID (conserva el orden del resto)
+// Quita de la cola de listos la entrada de un PID 
 static void remove_from_ready_queue(int pid) {
     size_t n = ready_queue.size();
     for (size_t i = 0; i < n; i++) {
@@ -489,7 +463,6 @@ static void remove_from_ready_queue(int pid) {
 }
 
 // Elimina de la cola entradas de procesos que ya no están LISTOS
-// (por ejemplo, si otro módulo los finalizó o bloqueó)
 static void purge_ready_queue() {
     size_t n = ready_queue.size();
     for (size_t i = 0; i < n; i++) {
@@ -501,7 +474,6 @@ static void purge_ready_queue() {
 }
 
 // Gestión de llegadas: los procesos NUEVOS cuyo arrival_time ya se cumplió
-// pasan a LISTO y entran a la cola de listos.
 static void admit_arrivals() {
     for (auto& p : process_list) {
         if (p.state == NUEVO && p.arrival_time <= clock_ticks) {
@@ -509,22 +481,18 @@ static void admit_arrivals() {
             if (!in_ready_queue(p.pid)) ready_queue.push(p);
         }
     }
-    // 'create' y 'load' pueden encolar una copia ya marcada como LISTO
-    // mientras que en process_list sigue como NUEVO; se sincroniza aquí.
 }
 
 // Devuelve el proceso que debe usar la CPU en este tick según el algoritmo
 static PCB* pick_next_process() {
     PCB* current = (running_pid != -1) ? find_process(running_pid) : nullptr;
     if (current && current->state != EJECUCION) {
-        // Otro módulo cambió su estado (bloqueado, finalizado, etc.)
         current = nullptr;
         running_pid = -1;
         quantum_used = 0;
     }
 
     if (current_algo == "SRTF") {
-        // Buscar en LISTOS el de menor ráfaga restante (empate: el que llegó antes a la cola)
         PCB* best = nullptr;
         size_t n = ready_queue.size();
         for (size_t i = 0; i < n; i++) {
@@ -538,12 +506,11 @@ static PCB* pick_next_process() {
             }
         }
 
-        // Desapropiación inmediata solo si el candidato es estrictamente menor
         if (current && (!best || current->remaining_burst <= best->remaining_burst)) {
             return current;
         }
         if (current) {
-            current->state = LISTO;          // el que se estaba ejecutando vuelve a LISTOS
+            current->state = LISTO;          
             ready_queue.push(*current);
         }
         if (best) {
@@ -559,10 +526,9 @@ static PCB* pick_next_process() {
 
     // --- Round Robin ---
     if (current && quantum_used < current_quantum) {
-        return current;                      // aún le queda quantum
+        return current;                    
     }
     if (current) {
-        // Por si el quantum se redujo con set_sched mientras se ejecutaba
         current->state = LISTO;
         ready_queue.push(*current);
         running_pid = -1;
@@ -591,19 +557,14 @@ static void scheduler_tick() {
     int t = clock_ticks;
 
     if (proc) {
-        // Tiempo de Respuesta: primera vez que el proceso toma la CPU
         if (!proc->is_first_response) {
             proc->response_time = t - proc->arrival_time;
             proc->is_first_response = true;
         }
-
-        // Consumir una unidad de CPU
         proc->remaining_burst--;
         quantum_used++;
         gantt_record(proc->pid, proc->name, t);
     } else {
-        // CPU ociosa: solo se registra si quedan procesos por llegar,
-        // para no inflar el Gantt ni bajar el uso de CPU cuando ya todo terminó
         bool pending = false;
         for (const auto& p : process_list) {
             if (p.state == NUEVO || p.state == LISTO) { pending = true; break; }
@@ -611,26 +572,20 @@ static void scheduler_tick() {
         if (pending) gantt_record(0, "IDLE", t);
     }
 
-    // Tiempo de Espera: cada tick que un proceso pasa en LISTOS sin ejecutarse
     for (auto& p : process_list) {
         if (p.state == LISTO) p.waiting_time++;
     }
 
-    // Avanza el reloj simulado
     clock_ticks++;
 
     if (proc) {
         if (proc->remaining_burst <= 0) {
-            // Tiempo de Retorno: instante de finalización - instante de llegada
             proc->remaining_burst = 0;
             proc->state = FINALIZADO;
             proc->turnaround_time = clock_ticks - proc->arrival_time;
             running_pid = -1;
             quantum_used = 0;
         } else if (current_algo == "RR" && quantum_used >= current_quantum) {
-            // Quantum agotado con ráfaga pendiente: desapropiación.
-            // Primero entran los que llegan en este mismo instante y luego
-            // el proceso desalojado, que va al final de la cola.
             admit_arrivals();
             proc->state = LISTO;
             ready_queue.push(*proc);
@@ -640,10 +595,9 @@ static void scheduler_tick() {
     }
 }
 
-// --- Hilo 2: Motor de Scheduling (CPU) ---
+// Hilo 2: Motor de Scheduling (CPU) 
 void* cpu_thread_func(void* arg) {
     std::cout << "[CPU] Hilo del motor de scheduling iniciado.\n";
-    // Mantenemos el hilo vivo mientras la CLI esté corriendo
     while (is_running) {
         pthread_mutex_lock(&system_mutex);
         bool running = is_cpu_running;
@@ -651,16 +605,15 @@ void* cpu_thread_func(void* arg) {
         pthread_mutex_unlock(&system_mutex);
 
         if (!running) {
-            usleep(100000);   // en pausa: revisa cada 100 ms si se reanudó
+            usleep(100000);  
             continue;
         }
 
-        // --- SECCIÓN CRÍTICA: un tick del planificador ---
+        // SECCIÓN CRÍTICA DE LA CPU: 
+        // Durante la ejecución de un "tick", el hilo CLI no podrá mostrar resultados
         pthread_mutex_lock(&system_mutex);
         if (is_cpu_running) scheduler_tick();
         pthread_mutex_unlock(&system_mutex);
-
-        // Retardo real configurado con set_speed
         usleep(delay * 1000);
     }
     return nullptr;

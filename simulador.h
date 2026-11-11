@@ -5,7 +5,7 @@
 #include <vector>
 #include <pthread.h>
 
-// Definición de los estados del proceso exigidos
+// Definición de los estados del proceso
 enum ProcessState {
     NUEVO,
     LISTO,
@@ -16,26 +16,21 @@ enum ProcessState {
 
 // Estructura del Process Control Block (PCB)
 struct PCB {
-    int pid;                  // PID único autoincremental
-    std::string name;         // Nombre sin espacios
-    ProcessState state;       // Estado actual del proceso
-    int priority;             // Prioridad (1 a 5, por defecto 3)
+    int pid;                  
+    std::string name;        
+    ProcessState state;      
+    int priority;             
+    int arrival_time;         
+    int initial_burst;       
+    int remaining_burst;      
+    int waiting_time;         
+    int turnaround_time;      
+    int response_time;        
     
-    // Tiempos para simulación y métricas
-    int arrival_time;         // Tiempo de llegada (0 para interactivos, o t para lotes)
-    int initial_burst;        // Ráfaga inicial
-    int remaining_burst;      // Ráfaga restante
-    
-    // Estadísticas
-    int waiting_time;         // Tiempo de Espera (WT)
-    int turnaround_time;      // Tiempo de Retorno (TAT)
-    int response_time;        // Tiempo de Respuesta (RT)
-    
-    // Bandera para saber si ya se le midió el tiempo de respuesta
     bool is_first_response;   
 };
 
-// --- ESTRUCTURAS DE DATOS COMPARTIDAS ---
+//ESTRUCTURAS DE DATOS COMPARTIDAS 
 
 // Cola de procesos LISTOS
 extern std::queue<PCB> ready_queue;
